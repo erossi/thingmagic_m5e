@@ -64,10 +64,17 @@ void CRC_calcCrc8(uint16_t *crcReg, uint16_t u8Data)
 	}
 }
 
-/*! CRC calc
+/*! \brief CRC calc
  *
  * The CRC is calculated on the Data Length, Command, Status Word, and
  * Data bytes. The header (SOH, 0xFF) is not included in the CRC.
+ *
+ * The field are taken from the global rfid struct.
+ *
+ * \param include_status boolean to include the status word in the CRC
+ * calculation, used when the CRC is used on the received data.
+ *
+ * \sa struct rfid_t
  */
 uint16_t m5_crc(const uint8_t include_status)
 {
@@ -114,11 +121,13 @@ void tx_pkt(void)
 	usart_putchar(RFID_USART, (uint8_t)(rfid->crc & 0xff));
 }
 
-/*! RX the struct from m5
+/*! RX from m5
  *
  * Extract one single byte at a time from the buffer and store
  * it in the rfid structure. Every step is recorded in the rfid->error,
  * in case of failure it is possible to know at which step the problem occured.
+ *
+ * The rfid reply should be in 650msec max.
  *
  * The packet structure is:
  * Hdr(1) + datalen(1) + Cmd(1) + Status(2) + data(N) + CRC(Hi + Lo)
@@ -157,6 +166,7 @@ uint8_t rx_pkt(uint16_t timeout)
 				break;
 			case CMD:
 				if (usart_get(RFID_USART_PORT, &rfid->opcode, 1)) {
+					/* next step requires 2 read-cycle */
 					i = 0;
 					rfid->error = STATUS;
 				}
@@ -166,6 +176,7 @@ uint8_t rx_pkt(uint16_t timeout)
 					if (usart_get(RFID_USART_PORT, (uint8_t *)&rfid->status + 1 - i, 1))
 						i++;
 				} else {
+					/* next step requires many read-cycle */
 					i = 0;
 					rfid->error = DATA;
 				}
@@ -176,6 +187,7 @@ uint8_t rx_pkt(uint16_t timeout)
 					if (usart_get(RFID_USART_PORT, rfid->data + i, 1))
 						i++;
 				} else {
+					/* next step requires 2 read-cycle */
 					i = 0;
 					rfid->error = CRC;
 				}
@@ -234,7 +246,7 @@ uint8_t send_cmd(void)
  *
  * String size of the code is RFID size * 2 plus the CRC plus \0.
  *
- * \param rfid pre-allocated byte space.
+ * \param data pre-allocated byte space.
  * \return TRUE rfid code is present, FALSE no valid code.
  */
 uint8_t rfid_read(uint8_t* data)
@@ -274,12 +286,14 @@ uint8_t rfid_read(uint8_t* data)
 	memcpy_P(rfid->data, cmd_read, rfid->len);
 	ok = send_cmd();
 
-	/* BUG: copy rfid->len or rfid->size ? */
+	/* \bug copy rfid->len or rfid->size ? FIXME */
 	if (ok)
 		memcpy(data, rfid->data + 1, rfid->size);
 #else
 	/* Read the EPC of the 1st tag available
 	 * ff022103e8d509
+	 * 0x03e8 1 sec. timeout
+	 * 0x2710 10 sec. timeout
 	 */
 	rfid->len = 0x02;
 	rfid->opcode = 0x21;
@@ -287,7 +301,7 @@ uint8_t rfid_read(uint8_t* data)
 	rfid->data[1] = 0xe8;
 	ok = send_cmd();
 
-	/* BUG: copy rfid->len or rfid->size ? */
+	/*! \bug copy rfid->len or rfid->size ? FIXME */
 	if (ok)
 		memcpy(data, rfid->data, rfid->size);
 #endif
@@ -317,6 +331,8 @@ uint8_t rfid_resume(void)
 
 	/* Boot Firmware (04h):
 	 * ff00041d0b
+	 *
+	 * The maximum time required to boot the application firmware is 650ms.
 	 */
 	rfid->len = 0;
 	rfid->opcode = 0x04;
@@ -327,8 +343,9 @@ uint8_t rfid_resume(void)
 		rfid->error = FALSE;
 
 	if (!rfid->error) {
-		/* Set Current Region (97h) [to EU]
-		 * ff0197024bbf
+		/* Set Current Region (97h)
+		 * EU: ff0197024bbf
+		 * EU3: ff0197084bb5
 		 */
 		rfid->len = 0x01;
 		rfid->opcode = 0x97;
